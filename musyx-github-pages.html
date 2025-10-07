@@ -1,0 +1,207 @@
+<!doctype html>
+<!--
+musyx-github-pages.html
+Single-file GitHub Pages site scaffold to extract MusyX (.gmh + .gmb) using a WebAssembly build of musyx-extract.
+
+Instructions (short):
+1. Build musyx-extract to WebAssembly (emscripten) producing musyx_wasm.js + musyx_wasm.wasm OR place a CLI tool that exposes a JS API named `MusyXWASM` in the same folder.
+2. Drop this file into a GitHub repo's docs/ or root and enable GitHub Pages.
+3. Upload your banquet.gmh + banquet.gmb (or drag to the page). If musyx wasm exists it will attempt to run it; otherwise it will extract raw files for manual download and give instructions.
+
+Notes: This is a scaffold. If you want I can try to provide commands to compile musyx-extract to wasm (Emscripten) in a follow-up.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MusyX Extractor — GitHub Pages</title>
+  <style>
+    body{font-family:Inter,Segoe UI,Arial;max-width:900px;margin:28px auto;padding:18px;color:#111}
+    header{display:flex;align-items:center;gap:12px}
+    h1{margin:0;font-size:1.4rem}
+    p.lead{color:#444}
+    .card{border:1px solid #e6e6e6;padding:14px;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.03);margin-top:14px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    input[type=file]{display:none}
+    label.btn{background:#0070f3;color:white;padding:10px 12px;border-radius:8px;cursor:pointer}
+    button.action{background:#111;color:#fff;padding:8px 12px;border-radius:8px;border:0;cursor:pointer}
+    pre{background:#fafafa;padding:12px;border-radius:8px;overflow:auto}
+    ul{margin:6px 0 12px 20px}
+    .ok{color:green}
+    .warn{color:#b35900}
+    .file-list{margin-top:8px}
+    .log{white-space:pre-wrap;background:#0f1720;color:#cfe8ff;padding:8px;border-radius:8px;max-height:240px;overflow:auto}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MusyX Extractor — GitHub Pages scaffold</h1>
+  </header>
+  <p class="lead">Drop your <code>.gmh</code> and <code>.gmb</code> pair here. If you place a WebAssembly build of <code>musyx-extract</code> in the same folder (see docs below) the page will run extraction in your browser and offer downloadable WAV/MIDI/SF2 output.</p>
+
+  <div class="card">
+    <div class="row">
+      <label class="btn" for="files">Choose .gmh + .gmb</label>
+      <input id="files" type="file" multiple accept=".gmh,.gmb" />
+      <button id="runBtn" class="action">Run extraction (if WASM available)</button>
+      <button id="manualBtn" class="action">Download raw files</button>
+    </div>
+    <div class="file-list" id="fileList"></div>
+    <div style="margin-top:12px">
+      <div id="status">Status: <span id="statusText">Waiting for files</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Log</h3>
+    <div id="log" class="log">Ready.
+</div>
+  </div>
+
+  <div class="card">
+    <h3>How to add musyx-extract (WASM)</h3>
+    <p>This page is a scaffold. To run extraction entirely in the browser you need a WebAssembly build of musyx-extract (emscripten). Place the following files in the same folder as this HTML:</p>
+    <ul>
+      <li><code>musyx_wasm.js</code> (Emscripten-generated loader)</li>
+      <li><code>musyx_wasm.wasm</code> (the compiled wasm)</li>
+    </ul>
+    <p>When those are present the <strong>Run extraction</strong> button will call the wasm and return exported files to download. If you want, I can provide example emscripten build commands in the next message.</p>
+  </div>
+
+  <script>
+    const filesEl = document.getElementById('files');
+    const fileListEl = document.getElementById('fileList');
+    const runBtn = document.getElementById('runBtn');
+    const manualBtn = document.getElementById('manualBtn');
+    const logEl = document.getElementById('log');
+    const statusText = document.getElementById('statusText');
+
+    let gmh = null; let gmb = null;
+
+    function log(...args){
+      const now = new Date().toLocaleTimeString();
+      logEl.textContent += `\n[${now}] ` + args.join(' ');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    filesEl.addEventListener('change', (ev) => {
+      gmh = null; gmb = null;
+      fileListEl.innerHTML = '';
+      const files = Array.from(ev.target.files);
+      for(const f of files){
+        const item = document.createElement('div');
+        item.textContent = `${f.name} (${f.type || 'n/a'}) - ${Math.round(f.size/1024)} KB`;
+        fileListEl.appendChild(item);
+        if(f.name.toLowerCase().endsWith('.gmh')) gmh = f;
+        if(f.name.toLowerCase().endsWith('.gmb')) gmb = f;
+      }
+      if(!gmh || !gmb){
+        statusText.textContent = 'Select both .gmh and .gmb files';
+        statusText.className = 'warn';
+        log('Need both .gmh and .gmb');
+      } else {
+        statusText.textContent = 'Files loaded — ready';
+        statusText.className = 'ok';
+        log('Loaded:', gmh.name, gmb.name);
+      }
+    });
+
+    manualBtn.addEventListener('click', ()=>{
+      if(!gmh && !gmb){ alert('No files selected'); return; }
+      if(gmh) downloadFileObject(gmh, gmh.name);
+      if(gmb) downloadFileObject(gmb, gmb.name);
+    });
+
+    runBtn.addEventListener('click', async ()=>{
+      if(!gmh || !gmb){ alert('Please select both .gmh and .gmb'); return; }
+
+      // Try to detect WASM loader
+      if(typeof window.Module === 'undefined' && !window.musyxWasmAvailable){
+        // try dynamic import of musyx_wasm.js
+        try{
+          log('Attempting to load musyx_wasm.js...');
+          await import('./musyx_wasm.js');
+          log('musyx_wasm.js loaded.');
+          // musyx_wasm.js should export a global Module or a factory. We'll try to find common patterns.
+        }catch(e){
+          log('musyx_wasm.js not found or failed to load.\nFallback: extracting raw files for manual processing.');
+          alert('musyx_wasm.js not present in repo. Place compiled musyx_wasm.js + musyx_wasm.wasm next to this HTML to enable in-browser extraction.');
+          return;
+        }
+      }
+
+      // If we reached here, assume there's a Module object
+      if(typeof Module === 'undefined'){
+        log('WASM loader did not expose Module. Cannot run in-browser.');
+        alert('WASM loader did not expose Module. See console for details.');
+        return;
+      }
+
+      // Read files into memory
+      const gmhArr = new Uint8Array(await gmh.arrayBuffer());
+      const gmbArr = new Uint8Array(await gmb.arrayBuffer());
+
+      log('Files read into memory. Preparing FS...');
+
+      // Mount into Emscripten FS
+      try{
+        // create a directory
+        if(!Module.FS) throw new Error('Module.FS not present');
+        if(!Module.FS.analyzePath('/work').exists) Module.FS.mkdir('/work');
+        Module.FS.writeFile('/work/' + gmh.name, gmhArr);
+        Module.FS.writeFile('/work/' + gmb.name, gmbArr);
+        log('Files written to Emscripten FS: /work/' + gmh.name + ', ' + gmb.name);
+
+        // Call the main extraction function (depends on compiled API). We'll try a few common entrypoints.
+        log('Calling _main with musyx args...');
+        const args = ['musyx-extract', '/work/' + gmh.name];
+        if(typeof Module.callMain === 'function'){
+          Module.callMain(args);
+        } else if(typeof Module._main === 'function'){
+          // older Emscripten exports
+          const encArgs = Module._malloc((args.length+1)*4);
+          // This is fragile; best to compile the project exposing a JS-friendly API.
+          Module._main(args.length, encArgs);
+        } else {
+          throw new Error('No callMain/_main found');
+        }
+
+        log('Extraction command invoked. Looking for output in FS...');
+
+        // list /work
+        const outFiles = Module.FS.readdir('/work').filter(x=>!['.','..'].includes(x));
+        log('Files in /work: ' + outFiles.join(', '));
+
+        // Download wav/mid files
+        for(const fname of outFiles){
+          if(fname.endsWith('.wav') || fname.endsWith('.mid') || fname.endsWith('.sf2')){
+            const data = Module.FS.readFile('/work/' + fname);
+            downloadBlob(new Blob([data]), fname);
+            log('Saved: ' + fname);
+          }
+        }
+
+        log('Done. Check downloads.');
+      }catch(err){
+        console.error(err);
+        log('Error during WASM extraction: ' + err.message);
+        alert('Extraction failed. See log for details. You can still download original files to run musyx-extract locally.');
+      }
+
+    });
+
+    function downloadBlob(blob, name){
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 5000);
+    }
+
+    function downloadFileObject(fileObj, name){
+      fileObj.arrayBuffer().then(buf=>{
+        downloadBlob(new Blob([buf]), name);
+      });
+    }
+  </script>
+</body>
+</html>
